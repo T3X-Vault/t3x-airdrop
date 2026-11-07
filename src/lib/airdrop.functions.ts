@@ -6,11 +6,9 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { nextResetIso, weekKey, weekStartMs } from "@/lib/week";
 
 const GRANT = 50;
-const POST = 100;
-const POST_CAP = 3;
-const TAGS = ["#t3x", "#t3xdrop"];
+const LIVE_TAGS = ["#t3x", "#t3xdrop"];
 
-type BoardRow = { handle: string; coins: number };
+type BoardRow = { handle: string; score: number; prize: string };
 type DropRow = { tweetId: string; coins: number; claimed: boolean };
 
 async function xAccount(userId: string) {
@@ -21,23 +19,52 @@ async function xAccount(userId: string) {
   return rows[0]?.accountId ?? null;
 }
 
-async function pulse(week: string) {
+async function pulse() {
   const sql = await getSql();
-  const rows = await sql<BoardRow>`
-    select w.handle as handle, sum(d.coins)::int as coins
-    from drops d
-    join wallets w on w.user_id = d.user_id
-    where d.week_key = ${week} and d.claimed and w.handle is not null
+  const rows = await sql<{ handle: string; score: number }>`
+    select w.handle as handle, count(t.tag)::int as score
+    from tag_hits t
+    join wallets w on w.user_id = t.user_id
+    where w.handle is not null
     group by w.handle
-    order by coins desc
-    limit 24
+    order by score desc, w.handle asc
+    limit 100
   `;
-  return rows;
+  return rows.map((row, index) => ({ ...row, prize: prizeFor(index + 1) }));
+}
+
+function prizeFor(rank: number) {
+  if (rank === 1) return "$200 + T3X";
+  if (rank === 2) return "$50 + T3X";
+  if (rank === 3) return "$10 + T3X";
+  if (rank <= 100) return "T3X";
+  return "";
+}
+
+function tagsIn(text: string) {
+  const lower = text.toLowerCase();
+  return LIVE_TAGS.filter((tag) => lower.includes(tag));
+}
+
+async function recordTags(userId: string, tweetId: string, text: string) {
+  const sql = await getSql();
+  const found = tagsIn(text);
+  const added: string[] = [];
+  for (const tag of found) {
+    const rows = await sql<{ tag: string }>`
+      insert into tag_hits (user_id, tag, tweet_id)
+      values (${userId}, ${tag}, ${tweetId})
+      on conflict (user_id, tag) do nothing
+      returning tag
+    `;
+    if (rows[0]) added.push(rows[0].tag);
+  }
+  return { found, added };
 }
 
 export const getPulse = createServerFn({ method: "GET" }).handler(async () => {
   const week = weekKey();
-  return { week, resetAt: nextResetIso(), board: await pulse(week) };
+  return { week, resetAt: nextResetIso(), tags: LIVE_TAGS, board: await pulse() };
 });
 
 export const getMine = createServerFn({ method: "GET" })
@@ -75,7 +102,7 @@ export const getMine = createServerFn({ method: "GET" })
       balance: wallet[0]?.balance ?? 0,
       waiting,
       drops,
-      board: await pulse(week),
+      board: await pulse(),
     };
   });
 
@@ -112,30 +139,16 @@ export const finishProof = createServerFn({ method: "POST" })
     if (!tweet) return { ok: false as const, error: "X did not return that post." };
     const profile = await loadUser(proof[0].handle);
     if (!profile || tweet.authorId !== profile.id) return { ok: false as const, error: "That post is not from the handle you entered." };
-    const text = tweet.text.toLowerCase();
-    if (!TAGS.every((tag) => text.includes(tag))) {
-      return { ok: false as const, error: "The post needs both #T3X and #T3XDrop." };
-    }
-    const week = weekKey();
-    const reset = Date.parse(nextResetIso());
-    if (tweet.at < weekStartMs(week) || tweet.at >= reset) {
-      return { ok: false as const, error: "That post is outside this week." };
+    const found = tagsIn(tweet.text);
+    if (!found.length) {
+      return { ok: false as const, error: `The post needs one of ${LIVE_TAGS.join(" ")}. New tags go out on games and posters. Stay tuned.` };
     }
     const signed = await openSession(profile.screen);
     if (!signed.ok) return signed;
     await sql`insert into wallets (user_id, handle, x_id) values (${signed.userId}, ${profile.screen}, ${profile.id})
       on conflict (user_id) do update set handle = ${profile.screen}, x_id = ${profile.id}`;
-    const grantId = `grant:${week}:${signed.userId}`;
-    await sql`
-      insert into drops (user_id, week_key, tweet_id, coins, claimed)
-      values (${signed.userId}, ${week}, ${grantId}, ${GRANT}, false)
-      on conflict (tweet_id) do nothing
-    `;
-    await sql`
-      insert into drops (user_id, week_key, tweet_id, coins, claimed)
-      values (${signed.userId}, ${week}, ${id}, ${POST}, false)
-      on conflict (tweet_id) do nothing
-    `;
+    const recorded = await recordTags(signed.userId, id, tweet.text);
+    void recorded;
     await sql`delete from x_proofs where code = ${code}`;
     setCookie("t3x_proof", "", { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 0 });
     return { ok: true as const };
@@ -217,37 +230,21 @@ export const checkPost = createServerFn({ method: "POST" })
   .handler(async ({ context, data: url }) => {
     const id = url.match(/status(?:es)?\/(\d+)/)?.[1];
     if (!id) return { ok: false as const, error: "Paste the link to the post." };
-    const sql = await getSql();
-    const week = weekKey();
-    const wallet = await sql<{ handle: string | null; xId: string | null }>`
+    const wallet = await (await getSql())<{ handle: string | null; xId: string | null }>`
       select handle, x_id as "xId" from wallets where user_id = ${context.userId}
     `;
     const mine = wallet[0];
-    if (!mine?.handle || !mine.xId) return { ok: false as const, error: "Add your X handle first." };
-    const counted = await sql<{ n: number }>`
-      select count(*)::int as n from drops
-      where user_id = ${context.userId} and week_key = ${week} and tweet_id not like 'grant:%'
-    `;
-    if ((counted[0]?.n ?? 0) >= POST_CAP) return { ok: false as const, error: "Three posts already count this week." };
+    if (!mine?.handle || !mine.xId) return { ok: false as const, error: "Sign in with X first." };
     const tweet = await loadTweet(id);
     if (!tweet) return { ok: false as const, error: "X did not return that post." };
     if (tweet.authorId !== mine.xId) return { ok: false as const, error: "That post is not from your X account." };
-    const text = tweet.text.toLowerCase();
-    if (!TAGS.every((tag) => text.includes(tag))) {
-      return { ok: false as const, error: "The post needs both #T3X and #T3XDrop." };
+    const found = tagsIn(tweet.text);
+    if (!found.length) {
+      return { ok: false as const, error: `The post needs one of ${LIVE_TAGS.join(" ")}. New tags go out on games and posters. Stay tuned.` };
     }
-    const reset = Date.parse(nextResetIso());
-    if (tweet.at < weekStartMs(week) || tweet.at >= reset) {
-      return { ok: false as const, error: "That post is outside this week." };
-    }
-    const inserted = await sql<{ id: number }>`
-      insert into drops (user_id, week_key, tweet_id, coins, claimed)
-      values (${context.userId}, ${week}, ${id}, ${POST}, false)
-      on conflict (tweet_id) do nothing
-      returning id
-    `;
-    if (!inserted.length) return { ok: false as const, error: "That post is already on the board." };
-    return { ok: true as const, coins: POST };
+    const recorded = await recordTags(context.userId, id, tweet.text);
+    if (!recorded.added.length) return { ok: false as const, error: "Those tags already count. The same tag is not counted again." };
+    return { ok: true as const, added: recorded.added };
   });
 
 export const claimCoins = createServerFn({ method: "POST" })

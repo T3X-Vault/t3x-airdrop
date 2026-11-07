@@ -3,7 +3,7 @@ import { SignedIn, UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { assignWallet, bindHandle, checkPost, claimCoins, finishProof, getMine, getPulse, startProof } from "@/lib/airdrop.functions";
 
-type Row = { handle: string; coins: number };
+type Row = { handle: string; score: number; prize: string };
 type Drop = { tweetId: string; coins: number; claimed: boolean };
 
 type Pulse = { week: string; resetAt: string; board: Row[] };
@@ -107,7 +107,7 @@ export function Board() {
       if (!result.ok) setNote(result.error);
       else {
         setLink("");
-        setNote(`${result.coins} T3X is waiting. Claim it before Sunday.`);
+        setNote(result.added.length ? `Counted ${result.added.join(" ")}. The same tag will not count again.` : "Those tags already count.");
         setMine(await getMine());
       }
     } catch {
@@ -154,7 +154,7 @@ export function Board() {
       <section>
         <img src="/brand/t3x-coin.png" alt="" className="h-28 w-28 object-contain sm:h-36 sm:w-36" />
         <p className="mt-6 font-display text-7xl leading-none text-fg sm:text-8xl">T3X</p>
-        <p className="mt-3 max-w-sm text-lg text-muted">This week’s drop. It resets Sunday at midnight, Sydney time.</p>
+        <p className="mt-3 max-w-sm text-lg text-muted">Sign in with X. Each live tag counts once. The same tag is not counted again.</p>
         <div className="mt-8 grid max-w-md grid-cols-3 gap-3">
           <ClockCell label="Hours" value={view ? clock.hours : "--"} />
           <ClockCell label="Minutes" value={view ? clock.minutes : "--"} />
@@ -171,11 +171,11 @@ export function Board() {
           </SignedIn>
         </div>
         <ul className="grid gap-2 text-sm text-fg sm:grid-cols-3">
-          <li className="border border-line px-3 py-3">50 for signing in</li>
-          <li className="border border-line px-3 py-3">100 for a tagged post</li>
-          <li className="border border-line px-3 py-3">Three posts, then it clears</li>
+          <li className="border border-line px-3 py-3">1st · $200 + T3X</li>
+          <li className="border border-line px-3 py-3">2nd · $50 + T3X</li>
+          <li className="border border-line px-3 py-3">3rd · $10 + T3X</li>
         </ul>
-        <p className="text-sm text-muted">Post with #T3X and #T3XDrop, then assign the wallet the coins should land in.</p>
+        <p className="text-sm text-muted">Top 100 get a prize and T3X. T3X will be paid once it becomes available. New tags go out on games and posters. Stay tuned.</p>
 
         {(!user || mine?.needsX) && (
           <div className="grid gap-3">
@@ -269,13 +269,13 @@ export function Board() {
         <div>
           <h2 className="font-display text-3xl">Board</h2>
           <ol className="mt-3 divide-y divide-line border-t border-line">
-            {(view?.board.length ? view.board : [{ handle: "No claims yet", coins: 0 }]).map((row, index) => (
+            {(view?.board.length ? view.board : [{ handle: "No tags yet", score: 0, prize: "" }]).map((row, index) => (
               <li key={row.handle} className="flex items-center justify-between py-3">
                 <span>
                   <span className="mr-3 font-mono text-sm text-muted">{String(index + 1).padStart(2, "0")}</span>
-                  {row.handle === "No claims yet" ? row.handle : `@${row.handle}`}
+                  {row.handle === "No tags yet" ? row.handle : `@${row.handle}`}
                 </span>
-                <span className="font-mono text-gold">{row.coins ? row.coins : ""}</span>
+                <span className="font-mono text-gold">{row.score ? `${row.score} · ${row.prize}` : ""}</span>
               </li>
             ))}
           </ol>

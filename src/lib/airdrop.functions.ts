@@ -283,10 +283,24 @@ function cleanAddress(raw: string) {
 }
 
 async function loadUser(handle: string): Promise<{ id: string; screen: string } | null> {
-  const body = await readJson(`https://api.fxtwitter.com/${encodeURIComponent(handle)}`);
+  const clean = handle.replace(/^@/, "").trim();
+  const body = await readJson(`https://api.fxtwitter.com/${encodeURIComponent(clean)}`);
   const user = body?.user as { id?: string; screen_name?: string } | undefined;
-  if (!user?.id || !user.screen_name) return null;
-  return { id: String(user.id), screen: user.screen_name };
+  if (user?.id && user.screen_name) return { id: String(user.id), screen: user.screen_name };
+
+  const page = await readText(`https://x.com/${encodeURIComponent(clean)}`);
+  const id = page?.match(/profile_banners\/(\d+)\//)?.[1];
+  const screen = page?.match(/screen_name=([A-Za-z0-9_]{1,15})/)?.[1];
+  if (id && screen) return { id, screen };
+
+  const sql = await getSql();
+  const known = await sql<{ handle: string; xId: string }>`
+    select handle, x_id as "xId" from wallets
+    where lower(handle) = lower(${clean}) and x_id is not null
+    limit 1
+  `;
+  if (known[0]?.xId) return { id: known[0].xId, screen: known[0].handle };
+  return null;
 }
 
 async function loadTweet(id: string): Promise<{ authorId: string; text: string; at: number } | null> {
@@ -297,16 +311,29 @@ async function loadTweet(id: string): Promise<{ authorId: string; text: string; 
     author?: { id?: string };
     entities?: { hashtags?: { text?: string }[] };
   } | undefined;
-  if (!tweet?.author?.id || !tweet.text || !tweet.created_timestamp) return null;
-  const tags = (tweet.entities?.hashtags ?? [])
-    .map((tag) => (tag.text ? `#${tag.text}` : ""))
-    .filter(Boolean)
-    .join(" ");
-  return {
-    authorId: String(tweet.author.id),
-    text: `${tweet.text} ${tags}`,
-    at: tweet.created_timestamp * 1000,
-  };
+  if (tweet?.author?.id && tweet.text && tweet.created_timestamp) {
+    const tags = (tweet.entities?.hashtags ?? [])
+      .map((tag) => (tag.text ? `#${tag.text}` : ""))
+      .filter(Boolean)
+      .join(" ");
+    return {
+      authorId: String(tweet.author.id),
+      text: `${tweet.text} ${tags}`,
+      at: tweet.created_timestamp * 1000,
+    };
+  }
+  const live = await readJson(`https://cdn.syndication.twimg.com/tweet-result?id=${encodeURIComponent(id)}&token=0`);
+  const text = typeof live?.text === "string" ? live.text : "";
+  const author = live?.user as { id_str?: string } | undefined;
+  const created = typeof live?.created_at === "string" ? Date.parse(live.created_at) : 0;
+  if (!text || !author?.id_str) return null;
+  return { authorId: String(author.id_str), text, at: created || Date.now() };
+}
+
+async function readText(url: string): Promise<string | null> {
+  const response = await fetch(url, { headers: { accept: "text/html", "user-agent": "Mozilla/5.0" } });
+  if (!response.ok) return null;
+  return response.text();
 }
 
 async function readJson(url: string): Promise<Record<string, unknown> | null> {

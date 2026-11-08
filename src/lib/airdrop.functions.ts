@@ -264,9 +264,7 @@ export const claimCoins = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     const sql = await getSql();
-    const wallet = await sql<{ address: string | null }>`select address from wallets where user_id = ${context.userId}`;
     const stats = await tagStats(context.userId);
-    if (!wallet[0]?.address) return { gained: 0, balance: stats.earned, error: "Assign a wallet first." };
     if (stats.waiting <= 0) return { gained: 0, balance: stats.earned, error: "Nothing to claim. 1 T3X is paid for every 2 tags." };
     const week = weekKey();
     await sql`

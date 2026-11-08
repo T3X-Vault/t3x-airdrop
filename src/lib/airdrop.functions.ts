@@ -5,7 +5,6 @@ import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { nextResetIso, weekKey, weekStartMs } from "@/lib/week";
 
-const GRANT = 50;
 const LIVE_TAGS = ["#t3x", "#t3xdrop"];
 
 type BoardRow = { handle: string; score: number; prize: string };
@@ -46,6 +45,20 @@ function tagsIn(text: string) {
   return LIVE_TAGS.filter((tag) => lower.includes(tag));
 }
 
+async function tagStats(userId: string) {
+  const sql = await getSql();
+  const rows = await sql<{ n: number }>`select count(*)::int as n from tag_hits where user_id = ${userId}`;
+  const tags = Number(rows[0]?.n ?? 0);
+  const earned = Math.floor(tags / 2);
+  const paidRows = await sql<{ paid: number }>`
+    select coalesce(sum(coins), 0)::int as paid
+    from drops
+    where user_id = ${userId} and claimed = true and tweet_id like 'tags:%'
+  `;
+  const paid = Number(paidRows[0]?.paid ?? 0);
+  return { tags, earned, waiting: Math.max(0, earned - paid) };
+}
+
 async function recordTags(userId: string, tweetId: string, text: string) {
   const sql = await getSql();
   const found = tagsIn(text);
@@ -78,29 +91,23 @@ export const getMine = createServerFn({ method: "GET" })
       select handle, x_id as "xId", balance, address from wallets where user_id = ${context.userId}
     `;
     const known = Boolean(xId || wallet[0]?.xId);
-    if (known) {
-      const grantId = `grant:${week}:${context.userId}`;
-      await sql`
-        insert into drops (user_id, week_key, tweet_id, coins, claimed)
-        values (${context.userId}, ${week}, ${grantId}, ${GRANT}, false)
-        on conflict (tweet_id) do nothing
-      `;
-    }
+    const stats = await tagStats(context.userId);
     const drops = await sql<DropRow>`
       select tweet_id as "tweetId", coins, claimed
       from drops
-      where user_id = ${context.userId} and week_key = ${week}
+      where user_id = ${context.userId} and week_key = ${week} and tweet_id like 'tags:%'
       order by id
     `;
-    const waiting = drops.filter((row) => !row.claimed).reduce((sum, row) => sum + row.coins, 0);
     return {
       week,
       resetAt: nextResetIso(),
       needsX: !known,
       handle: wallet[0]?.handle ?? null,
       address: wallet[0]?.address ?? null,
-      balance: wallet[0]?.balance ?? 0,
-      waiting,
+      balance: stats.earned,
+      waiting: stats.waiting,
+      tags: stats.tags,
+      earned: stats.earned,
       drops,
       board: await pulse(),
     };
@@ -257,22 +264,17 @@ export const claimCoins = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
     const sql = await getSql();
+    const wallet = await sql<{ address: string | null }>`select address from wallets where user_id = ${context.userId}`;
+    const stats = await tagStats(context.userId);
+    if (!wallet[0]?.address) return { gained: 0, balance: stats.earned, error: "Assign a wallet first." };
+    if (stats.waiting <= 0) return { gained: 0, balance: stats.earned, error: "Nothing to claim. 1 T3X is paid for every 2 tags." };
     const week = weekKey();
-    const wallet = await sql<{ address: string | null; balance: number }>`
-      select address, balance from wallets where user_id = ${context.userId}
+    await sql`
+      insert into drops (user_id, week_key, tweet_id, coins, claimed)
+      values (${context.userId}, ${week}, ${`tags:${context.userId}:${Date.now()}`}, ${stats.waiting}, true)
     `;
-    if (!wallet[0]?.address) return { gained: 0, balance: wallet[0]?.balance ?? 0, error: "Assign a wallet first." };
-    const rows = await sql<{ coins: number }>`
-      update drops set claimed = true
-      where user_id = ${context.userId} and week_key = ${week} and claimed = false
-      returning coins
-    `;
-    const gained = rows.reduce((sum, row) => sum + row.coins, 0);
-    if (gained > 0) {
-      await sql`update wallets set balance = balance + ${gained} where user_id = ${context.userId}`;
-    }
-    const balance = await sql<{ balance: number }>`select balance from wallets where user_id = ${context.userId}`;
-    return { gained, balance: balance[0]?.balance ?? 0, error: "" };
+    await sql`update wallets set balance = ${stats.earned} where user_id = ${context.userId}`;
+    return { gained: stats.waiting, balance: stats.earned, error: "" };
   });
 
 function cleanAddress(raw: string) {

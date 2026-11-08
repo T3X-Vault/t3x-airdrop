@@ -13,6 +13,8 @@ type Mine = Pulse & {
   address: string | null;
   balance: number;
   waiting: number;
+  tags?: number;
+  earned?: number;
   drops: Drop[];
 };
 
@@ -26,7 +28,12 @@ export function Board() {
   const [note, setNote] = useState("");
   const [proof, setProof] = useState<{ handle: string; text: string; intent: string; code: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [embed, setEmbed] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    setEmbed(new URLSearchParams(window.location.search).get("embed") === "1");
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -153,32 +160,29 @@ export function Board() {
   }
 
   return (
-    <main className="mx-auto grid min-h-dvh w-full max-w-6xl gap-8 px-5 py-8 lg:grid-cols-2 lg:items-center lg:gap-16">
+    <main className={`mx-auto grid w-full max-w-3xl gap-6 px-4 py-5 ${embed ? "" : "min-h-dvh max-w-6xl gap-8 px-5 py-8 lg:grid-cols-2 lg:items-start lg:gap-16"}`}>
+      {!embed && (
       <section>
-        <img src="/brand/t3x-coin.png" alt="" className="h-28 w-28 object-contain sm:h-36 sm:w-36" />
-        <p className="mt-6 font-display text-7xl leading-none text-fg sm:text-8xl">T3X</p>
-        <p className="mt-3 max-w-sm text-lg text-muted">Sign in with X. Each live tag counts once. The same tag is not counted again.</p>
-        <div className="mt-8 grid max-w-md grid-cols-3 gap-3">
+        <img src="/brand/t3x-coin.png" alt="" className="h-20 w-20 object-contain" />
+        <p className="mt-4 font-display text-5xl leading-none text-fg">T3X</p>
+        <p className="mt-3 max-w-sm text-base text-muted">Sign in with X. Each tag counts once. 1 T3X is paid for every 2 tags.</p>
+        <div className="mt-6 grid max-w-md grid-cols-3 gap-3">
           <ClockCell label="Hours" value={view ? clock.hours : "--"} />
           <ClockCell label="Minutes" value={view ? clock.minutes : "--"} />
           <ClockCell label="Seconds" value={view ? clock.seconds : "--"} />
         </div>
         <p className="mt-4 text-sm text-muted">{view ? `Week of ${view.week}` : "Opening the week"}</p>
       </section>
+      )}
 
-      <section className="flex flex-col gap-5 border border-line bg-surface p-5 sm:p-7">
+      <section className="flex flex-col gap-4 border border-line bg-surface p-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm tracking-[0.18em] text-muted uppercase">Claim desk</p>
+          <p className="text-xs tracking-[0.18em] text-muted uppercase">Claim desk</p>
           <SignedIn>
             <UserButton />
           </SignedIn>
         </div>
-        <ul className="grid gap-2 text-sm text-fg sm:grid-cols-3">
-          <li className="border border-line px-3 py-3">1st · $200 + T3X</li>
-          <li className="border border-line px-3 py-3">2nd · $50 + T3X</li>
-          <li className="border border-line px-3 py-3">3rd · $10 + T3X</li>
-        </ul>
-        <p className="text-sm text-muted">Top 100 get a prize and T3X. T3X will be paid once it becomes available. New tags go out on games and posters. Stay tuned.</p>
+        <p className="text-sm text-muted">1st $200 + T3X. 2nd $50 + T3X. 3rd $10 + T3X. Top 100 get T3X, paid once it is available. 1 T3X for every 2 tags.</p>
 
         {(!user || mine?.needsX) && (
           <div className="grid gap-3">
@@ -223,8 +227,9 @@ export function Board() {
           <div className="grid gap-4">
             <div className="flex items-end justify-between gap-4">
               <div>
-                <p className="text-sm text-muted">In your wallet</p>
-                <p className="font-mono text-5xl text-gold">{mine.balance}</p>
+                <p className="text-sm text-muted">T3X from tags</p>
+                <p className="font-mono text-4xl text-gold">{mine.earned ?? mine.balance}</p>
+                <p className="mt-1 text-xs text-muted">{mine.tags ?? 0} tags. 1 T3X for every 2 tags.</p>
               </div>
               <button type="button" disabled={busy || !mine.waiting || !mine.address} onClick={claim} className="min-h-12 bg-fg px-5 text-bg disabled:opacity-40">
                 Claim {mine.waiting || ""}
@@ -275,12 +280,15 @@ export function Board() {
           <h2 className="font-display text-3xl">Board</h2>
           <ol className="mt-3 divide-y divide-line border-t border-line">
             {(view?.board.length ? view.board : [{ handle: "No tags yet", score: 0, prize: "" }]).map((row, index) => (
-              <li key={row.handle} className="flex items-center justify-between py-3">
-                <span>
-                  <span className="mr-3 font-mono text-sm text-muted">{String(index + 1).padStart(2, "0")}</span>
-                  {row.handle === "No tags yet" ? row.handle : `@${row.handle}`}
-                </span>
-                <span className="font-mono text-gold">{row.score ? `${row.score} · ${row.prize}` : ""}</span>
+              <li key={row.handle} className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 py-3">
+                <span className="font-mono text-sm text-muted">{String(index + 1).padStart(2, "0")}</span>
+                <span className="truncate">{row.handle === "No tags yet" ? row.handle : `@${row.handle}`}</span>
+                {row.score ? (
+                  <span className="col-start-2 font-mono text-sm text-gold">
+                    {row.score} tags · {Math.floor(row.score / 2)} T3X
+                    {row.prize ? ` · ${row.prize}` : ""}
+                  </span>
+                ) : null}
               </li>
             ))}
           </ol>

@@ -119,6 +119,7 @@ export const startProof = createServerFn({ method: "POST" })
     const text = `#T3X #T3XDrop`;
     return {
       ok: true as const,
+      code,
       handle: profile.screen,
       text,
       intent: `https://x.com/intent/post?text=${encodeURIComponent(text)}`,
@@ -126,22 +127,26 @@ export const startProof = createServerFn({ method: "POST" })
   });
 
 export const finishProof = createServerFn({ method: "POST" })
-  .validator((url: string) => url.trim())
-  .handler(async ({ data: url }) => {
-    const code = getCookie("t3x_proof");
-    if (!code) return { ok: false as const, error: "Enter your handle again, then paste the post." };
-    const id = url.match(/status(?:es)?\/(\d+)/)?.[1];
-    if (!id) return { ok: false as const, error: "Paste the link to the post." };
+  .validator((value: unknown) => {
+    if (typeof value === "string") return { url: value.trim(), code: "" };
+    const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+    return { url: String(row.url ?? "").trim(), code: String(row.code ?? "").trim() };
+  })
+  .handler(async ({ data }) => {
+    const code = data.code || getCookie("t3x_proof") || "";
+    if (!code) return { ok: false as const, error: "Enter your X handle again, then paste the post link." };
+    const id = data.url.match(/status(?:es)?\/(\d+)/)?.[1];
+    if (!id) return { ok: false as const, error: "That is not a post link. Open the post, tap Share, and copy the link. It contains /status/ and a long number." };
     const sql = await getSql();
     const proof = await sql<{ handle: string }>`select handle from x_proofs where code = ${code} limit 1`;
-    if (!proof[0]) return { ok: false as const, error: "Enter your handle again, then paste the post." };
+    if (!proof[0]) return { ok: false as const, error: "Enter your X handle again, then paste the post link." };
     const tweet = await loadTweet(id);
-    if (!tweet) return { ok: false as const, error: "X did not return that post." };
+    if (!tweet) return { ok: false as const, error: "X did not return that post. Check the link and try again." };
     const profile = await loadUser(proof[0].handle);
     if (!profile || tweet.authorId !== profile.id) return { ok: false as const, error: "That post is not from the handle you entered." };
     const found = tagsIn(tweet.text);
-    if (!found.length) {
-      return { ok: false as const, error: `The post needs one of ${LIVE_TAGS.join(" ")}. New tags go out on games and posters. Stay tuned.` };
+    if (found.length < LIVE_TAGS.length) {
+      return { ok: false as const, error: "The post has to include both #T3X and #T3XDrop." };
     }
     const signed = await openSession(profile.screen);
     if (!signed.ok) return signed;
@@ -151,10 +156,10 @@ export const finishProof = createServerFn({ method: "POST" })
     void recorded;
     await sql`delete from x_proofs where code = ${code}`;
     setCookie("t3x_proof", "", { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 0 });
-    return { ok: true as const };
+    return { ok: true as const, token: signed.token };
   });
 
-async function openSession(handle: string): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
+async function openSession(handle: string): Promise<{ ok: true; userId: string; token: string } | { ok: false; error: string }> {
   const { auth } = await import("@/lib/auth/server");
   const email = `${handle.toLowerCase()}@x.t3x-airdrop.local`;
   const secret = process.env.BETTER_AUTH_SECRET || "t3x-preview-session";
@@ -174,13 +179,14 @@ async function openSession(handle: string): Promise<{ ok: true; userId: string }
       asResponse: true,
     });
   }
-  const cookies = response.headers.getSetCookie();
+  const cookies = typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : [];
   if (cookies.length) setResponseHeader("set-cookie", cookies);
+  const token = cookies.map((cookie) => cookie.match(/session_token=([^;]+)/)?.[1] || "").find(Boolean) || "";
   if (!response.ok) return { ok: false, error: "The session could not be opened. Try again." };
-  const body = (await response.json().catch(() => null)) as { user?: { id?: string } } | null;
+  const body = (await response.json().catch(() => null)) as { user?: { id?: string }; token?: string } | null;
   const userId = body?.user?.id;
   if (!userId) return { ok: false, error: "Signed in, but the account id was missing." };
-  return { ok: true, userId };
+  return { ok: true, userId, token: token || body?.token || "" };
 }
 
 export const assignWallet = createServerFn({ method: "POST" })

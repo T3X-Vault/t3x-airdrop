@@ -24,7 +24,7 @@ export function Board() {
   const [address, setAddress] = useState("");
   const [link, setLink] = useState("");
   const [note, setNote] = useState("");
-  const [proof, setProof] = useState<{ handle: string; text: string; intent: string } | null>(null);
+  const [proof, setProof] = useState<{ handle: string; text: string; intent: string; code: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
@@ -60,7 +60,7 @@ export function Board() {
     try {
       const result = await startProof({ data: handle });
       if (!result.ok) setNote(result.error);
-      else setProof({ handle: result.handle, text: result.text, intent: result.intent });
+      else setProof({ handle: result.handle, text: result.text, intent: result.intent, code: result.code });
     } catch {
       setNote("Could not start sign-in.");
     } finally {
@@ -72,9 +72,12 @@ export function Board() {
     setBusy(true);
     setNote("");
     try {
-      const result = await finishProof({ data: link });
+      const result = await finishProof({ data: { url: link, code: proof?.code || "" } });
       if (!result.ok) setNote(result.error);
-      else window.location.assign("/");
+      else {
+        if (result.token) window.sessionStorage.setItem("grok-auth.bearer-token", result.token);
+        window.location.assign("/");
+      }
     } catch {
       setNote("Could not finish sign-in.");
     } finally {
@@ -194,7 +197,8 @@ export function Board() {
               </div>
             ) : (
               <>
-                <p className="text-sm text-muted">Paste a post from @{proof.handle} that includes both #T3X and #T3XDrop. A post you already made is fine.</p>
+                <p className="text-sm text-muted">Post this from @{proof.handle}. The post has to include both tags. A post you already made is fine.</p>
+                <p className="border border-line px-3 py-3 font-mono text-sm">{proof.text}</p>
                 <a href={proof.intent} target="_blank" rel="noreferrer" className="flex min-h-12 items-center justify-center bg-fg px-5 text-bg">
                   Open X
                 </a>
@@ -202,13 +206,14 @@ export function Board() {
                   <input
                     value={link}
                     onChange={(event) => setLink(event.target.value)}
-                    placeholder="Link to that post"
+                    placeholder="https://x.com/name/status/123"
                     className="min-h-12 flex-1 border border-line bg-bg px-3 text-fg outline-none"
                   />
                   <button type="button" disabled={busy} onClick={finish} className="min-h-12 border border-line px-4 text-fg">
                     I posted it
                   </button>
                 </div>
+                {note ? <p className="text-sm text-gold">{note}</p> : null}
               </>
             )}
           </div>
